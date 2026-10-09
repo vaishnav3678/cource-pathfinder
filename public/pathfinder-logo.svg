@@ -1,0 +1,25 @@
+<svg width="500" height="500" viewBox="0 0 500 500" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Outer circular navy ring -->
+  <circle cx="250" cy="250" r="236" stroke="#0B2147" stroke-width="18" fill="#FFFFFF" />
+
+  <!-- Graduation Cap -->
+  <path d="M250 78 L348 122 L250 166 L152 122 Z" fill="#0B2147" />
+  <path d="M188 136 C188 168 312 168 312 136 L312 148 C312 180 188 180 188 148 Z" fill="#0B2147" />
+  <path d="M250 122 C292 126 332 154 332 192" stroke="#0B2147" stroke-width="5" stroke-linecap="round" fill="none" />
+  <circle cx="332" cy="192" r="7.5" fill="#0B2147" />
+
+  <!-- Bold 'P' -->
+  <path d="M168 150 H272 C320 150 348 182 348 226 C348 268 318 298 272 298 H236 V348 H168 Z M236 242 H266 C282 242 292 234 292 224 C292 214 282 206 266 206 H236 Z" fill="#0B2147" />
+
+  <!-- Open Book -->
+  <path d="M250 286 C225 270 190 274 168 288 C168 304 220 310 250 326 C280 310 332 304 332 288 C310 274 275 270 250 286 Z" fill="#0B2147" />
+  <!-- Fanned Pages in Royal Blue -->
+  <path d="M258 274 C280 240 310 210 330 210 C324 238 298 272 278 288 Z" fill="#1D70E2" />
+  <path d="M252 282 C270 256 295 232 312 232 C306 252 284 276 268 290 Z" fill="#2563EB" />
+
+  <!-- PATHFINDER Wordmark -->
+  <text x="250" y="400" text-anchor="middle" fill="#0B2147" font-family="'Plus Jakarta Sans', system-ui, sans-serif" font-weight="800" font-size="48" letter-spacing="2">PATHFINDER</text>
+
+  <!-- Tagline -->
+  <text x="250" y="436" text-anchor="middle" fill="#0B2147" font-family="'Plus Jakarta Sans', system-ui, sans-serif" font-weight="600" font-size="15" letter-spacing="0.5">Learn • Build • Test • Deploy • Grow</text>
+</svg>
