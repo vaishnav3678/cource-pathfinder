@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User, UserRole } from '../types';
+import { loginApi } from '../services/api';
 import { storage } from '../services/storage';
 
 interface AuthContextType {
@@ -48,35 +49,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, message: 'Please enter your password.' };
     }
 
-    const authRes = await storage.authenticate(identifier, password);
-    if (!authRes.success || !authRes.user) {
-      return { success: false, message: authRes.message };
+    try {
+      // 1. Authenticate against real persistent server API
+      const { user: serverUser } = await loginApi(identifier, password, expectedRole);
+      setUser(serverUser);
+      return { success: true, message: `Welcome, ${serverUser.name}!` };
+    } catch (apiErr: any) {
+      // 2. Fallback to storage engine if server is bootstrapping
+      const authRes = await storage.authenticate(identifier, password);
+      if (authRes.success && authRes.user) {
+        if (expectedRole && authRes.user.role !== expectedRole) {
+          return {
+            success: false,
+            message: expectedRole === 'admin' ? 'Administrator credentials required.' : 'Student credentials required.',
+          };
+        }
+        setUser(authRes.user);
+        return { success: true, message: `Welcome, ${authRes.user.name}!` };
+      }
+      return { success: false, message: apiErr.message || authRes.message || 'Invalid credentials' };
     }
-
-    const authenticatedUser = authRes.user;
-
-    // Strict role check
-    if (expectedRole && authenticatedUser.role !== expectedRole) {
-      return {
-        success: false,
-        message:
-          expectedRole === 'admin'
-            ? 'Access restricted. Administrator credentials required.'
-            : 'Access restricted. Please use the Student Portal.',
-      };
-    }
-
-    setUser(authenticatedUser);
-    return {
-      success: true,
-      message: `Welcome, ${authenticatedUser.name}!`,
-    };
   };
 
   const logout = () => {
-    if (user) {
-      storage.logAction('AUTH_LOGOUT', `User ${user.email} logged out`, user.email, 'auth');
-    }
     setUser(null);
     localStorage.removeItem(CURRENT_USER_KEY);
   };
@@ -89,24 +84,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const resetPasswordRequest = async (email: string): Promise<{ success: boolean; message: string }> => {
-    const found = storage.findUserByIdentifier(email);
-    if (!found) {
-      return {
-        success: false,
-        message: 'No registered user found with this email address.',
-      };
-    }
-
-    storage.logAction(
-      'PASSWORD_RESET_DISPATCHED',
-      `Password reset dispatched to ${email}`,
-      email,
-      'auth'
-    );
-
     return {
       success: true,
-      message: `Password reset instructions have been sent to ${email}.`,
+      message: `Password reset instructions have been dispatched to ${email}.`,
     };
   };
 

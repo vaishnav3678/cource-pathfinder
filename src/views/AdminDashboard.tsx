@@ -1,8 +1,27 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../components/common/Toast';
-import { storage } from '../services/storage';
-import { saveMediaFile, deleteMediaFile } from '../services/mediaStore';
+import {
+  fetchCourses,
+  fetchStudents,
+  fetchEnrollments,
+  updateCourse,
+  uploadLessonVideoFile,
+  updateLessonVideoUrl,
+  uploadLessonPdfResource,
+  deleteLessonPdfResource,
+  updateCourseMeeting,
+  createStudentApi,
+  addModuleApi,
+  updateModuleApi,
+  deleteModuleApi,
+  addLessonApi,
+  updateLessonApi,
+  deleteLessonApi,
+  updateStudentEnrollmentsApi,
+  updateStudentProfileApi,
+  notifyDataChanged,
+} from '../services/api';
 import { Course, CourseModule, Lesson, User, Enrollment, LessonResource, MeetingSchedule } from '../types';
 import {
   Users,
@@ -23,8 +42,6 @@ import {
   Search,
   ExternalLink,
   Shield,
-  Clock,
-  ArrowUpRight,
   TrendingUp,
   FileUp,
 } from 'lucide-react';
@@ -37,14 +54,56 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
   const { user, isAdmin } = useAuth();
   const { success, error, info } = useToast();
 
-  const [activeTab, setActiveTab] = useState<'overview' | 'courses' | 'videos' | 'resources' | 'students' | 'meetings' | 'logs'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'courses' | 'videos' | 'resources' | 'students' | 'meetings'>('overview');
 
   // State data
   const [courses, setCourses] = useState<Course[]>([]);
   const [students, setStudents] = useState<User[]>([]);
   const [enrollments, setEnrollments] = useState<Enrollment[]>([]);
+  const [loading, setLoading] = useState(false);
 
-  // Video Management Modal / Interface
+  // Edit Course Details Modal
+  const [courseEditModal, setCourseEditModal] = useState(false);
+  const [editCourseId, setEditCourseId] = useState('');
+  const [editCourseTitle, setEditCourseTitle] = useState('');
+  const [editCourseSummary, setEditCourseSummary] = useState('');
+  const [editCourseDesc, setEditCourseDesc] = useState('');
+  const [editCourseDuration, setEditCourseDuration] = useState('');
+  const [editCoursePrice, setEditCoursePrice] = useState(0);
+  const [editCourseThumbnail, setEditCourseThumbnail] = useState('');
+
+  // Module Modal (Add / Edit)
+  const [moduleModal, setModuleModal] = useState<{
+    mode: 'add' | 'edit';
+    courseId: string;
+    moduleId?: string;
+    title: string;
+    description: string;
+  } | null>(null);
+
+  // Lesson Modal (Add / Edit)
+  const [lessonModal, setLessonModal] = useState<{
+    mode: 'add' | 'edit';
+    courseId: string;
+    moduleId: string;
+    lessonId?: string;
+    title: string;
+    description: string;
+    durationMinutes: number;
+    videoUrl: string;
+    videoSourceType: 'upload' | 'url';
+    isPublished: boolean;
+  } | null>(null);
+
+  // Edit Student Access / Enrollments Modal
+  const [studentEditModal, setStudentEditModal] = useState<{
+    student: User;
+    assignedCourseIds: string[];
+    status: 'active' | 'suspended';
+    newPassword?: string;
+  } | null>(null);
+
+  // Video Management Modal
   const [videoModalOpen, setVideoModalOpen] = useState(false);
   const [targetCourseId, setTargetCourseId] = useState('fullstack-ai');
   const [targetModuleId, setTargetModuleId] = useState('');
@@ -81,33 +140,41 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
   const [meetingPlatform, setMeetingPlatform] = useState<'Google Meet' | 'Zoom' | 'Microsoft Teams'>('Google Meet');
   const [meetingUrl, setMeetingUrl] = useState('');
   const [meetingTimeDesc, setMeetingTimeDesc] = useState('');
-  const [meetingDate, setMeetingDate] = useState('');
-  const [meetingTime, setMeetingTime] = useState('');
   const [meetingInstructions, setMeetingInstructions] = useState('');
   const [meetingIsPublished, setMeetingIsPublished] = useState(true);
 
   // Search filter
   const [searchStudentQuery, setSearchStudentQuery] = useState('');
 
-  const refreshAllData = () => {
-    const loadedCourses = storage.getCourses();
-    setCourses(loadedCourses);
-    setStudents(storage.getStudents());
-    setEnrollments(storage.getEnrollments());
+  const refreshAllData = async () => {
+    try {
+      setLoading(true);
+      const [allCourses, allStudents, allEnrollments] = await Promise.all([
+        fetchCourses(),
+        fetchStudents(),
+        fetchEnrollments(),
+      ]);
 
-    // Defaults for selectors
-    if (loadedCourses.length > 0) {
-      const defaultCourse = loadedCourses[0];
-      setTargetCourseId(defaultCourse.id);
-      setPdfCourseId(defaultCourse.id);
-      if (defaultCourse.modules.length > 0) {
-        setTargetModuleId(defaultCourse.modules[0].id);
-        setPdfModuleId(defaultCourse.modules[0].id);
-        if (defaultCourse.modules[0].lessons.length > 0) {
-          setTargetLessonId(defaultCourse.modules[0].lessons[0].id);
-          setPdfLessonId(defaultCourse.modules[0].lessons[0].id);
+      setCourses(allCourses);
+      setStudents(allStudents);
+      setEnrollments(allEnrollments);
+
+      if (allCourses.length > 0) {
+        setTargetCourseId(allCourses[0].id);
+        setPdfCourseId(allCourses[0].id);
+        if (allCourses[0].modules.length > 0) {
+          setTargetModuleId(allCourses[0].modules[0].id);
+          setPdfModuleId(allCourses[0].modules[0].id);
+          if (allCourses[0].modules[0].lessons.length > 0) {
+            setTargetLessonId(allCourses[0].modules[0].lessons[0].id);
+            setPdfLessonId(allCourses[0].modules[0].lessons[0].id);
+          }
         }
       }
+    } catch (err: any) {
+      error(err.message || 'Failed to sync data from server database');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -115,7 +182,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
     refreshAllData();
   }, []);
 
-  // Sync Meeting Form when course changes
+  // Sync Meeting Form when course selection changes
   useEffect(() => {
     const c = courses.find((item) => item.id === meetingTargetCourse);
     if (c?.meetingSchedule) {
@@ -123,8 +190,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
       setMeetingPlatform(c.meetingSchedule.platform || 'Google Meet');
       setMeetingUrl(c.meetingSchedule.url || '');
       setMeetingTimeDesc(c.meetingSchedule.timeDescription || '');
-      setMeetingDate(c.meetingSchedule.date || '');
-      setMeetingTime(c.meetingSchedule.time || '');
       setMeetingInstructions(c.meetingSchedule.instructions || '');
       setMeetingIsPublished(c.meetingSchedule.isPublished ?? true);
     } else if (c) {
@@ -132,8 +197,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
       setMeetingPlatform('Google Meet');
       setMeetingUrl('');
       setMeetingTimeDesc('Tuesdays & Thursdays • 7:30 PM IST');
-      setMeetingDate('');
-      setMeetingTime('');
       setMeetingInstructions('');
       setMeetingIsPublished(true);
     }
@@ -144,7 +207,220 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
     return null;
   }
 
-  // --- VIDEO UPLOAD HANDLERS ---
+  // --- EDIT COURSE DETAILS ---
+  const handleOpenEditCourse = (course: Course) => {
+    setEditCourseId(course.id);
+    setEditCourseTitle(course.title);
+    setEditCourseSummary(course.summary);
+    setEditCourseDesc(course.description);
+    setEditCourseDuration(course.duration);
+    setEditCoursePrice(course.price);
+    setEditCourseThumbnail(course.thumbnailUrl || '');
+    setCourseEditModal(true);
+  };
+
+  const handleSaveCourseDetails = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const updated = await updateCourse(editCourseId, {
+        title: editCourseTitle.trim(),
+        summary: editCourseSummary.trim(),
+        description: editCourseDesc.trim(),
+        duration: editCourseDuration.trim(),
+        price: Number(editCoursePrice),
+        thumbnailUrl: editCourseThumbnail.trim() || undefined,
+      });
+
+      notifyDataChanged();
+      success(`Course "${updated.title}" updated in shared database! Student portals will reflect this immediately.`);
+      setCourseEditModal(false);
+      refreshAllData();
+    } catch (err: any) {
+      error('Failed to update course: ' + err.message);
+    }
+  };
+
+  // --- MODULE ACTIONS ---
+  const handleOpenAddModule = (courseId: string) => {
+    setModuleModal({
+      mode: 'add',
+      courseId,
+      title: '',
+      description: '',
+    });
+  };
+
+  const handleOpenEditModule = (courseId: string, mod: CourseModule) => {
+    setModuleModal({
+      mode: 'edit',
+      courseId,
+      moduleId: mod.id,
+      title: mod.title,
+      description: mod.description || '',
+    });
+  };
+
+  const handleSaveModule = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!moduleModal || !moduleModal.title.trim()) return;
+
+    try {
+      if (moduleModal.mode === 'add') {
+        await addModuleApi(moduleModal.courseId, {
+          title: moduleModal.title.trim(),
+          description: moduleModal.description.trim(),
+        });
+        success(`Module "${moduleModal.title}" created in shared database!`);
+      } else if (moduleModal.moduleId) {
+        await updateModuleApi(moduleModal.courseId, moduleModal.moduleId, {
+          title: moduleModal.title.trim(),
+          description: moduleModal.description.trim(),
+        });
+        success(`Module "${moduleModal.title}" updated in shared database!`);
+      }
+      notifyDataChanged();
+      setModuleModal(null);
+      refreshAllData();
+    } catch (err: any) {
+      error(err.message || 'Failed to save module');
+    }
+  };
+
+  const handleDeleteModule = async (courseId: string, moduleId: string, modTitle: string) => {
+    if (!window.confirm(`Are you sure you want to delete module "${modTitle}" and all its lessons?`)) {
+      return;
+    }
+    try {
+      await deleteModuleApi(courseId, moduleId);
+      notifyDataChanged();
+      success(`Module "${modTitle}" deleted.`);
+      refreshAllData();
+    } catch (err: any) {
+      error(err.message || 'Failed to delete module');
+    }
+  };
+
+  // --- LESSON ACTIONS ---
+  const handleOpenAddLesson = (courseId: string, moduleId: string) => {
+    setLessonModal({
+      mode: 'add',
+      courseId,
+      moduleId,
+      title: '',
+      description: '',
+      durationMinutes: 30,
+      videoUrl: '',
+      videoSourceType: 'url',
+      isPublished: true,
+    });
+  };
+
+  const handleOpenEditLesson = (courseId: string, moduleId: string, lesson: Lesson) => {
+    setLessonModal({
+      mode: 'edit',
+      courseId,
+      moduleId,
+      lessonId: lesson.id,
+      title: lesson.title,
+      description: lesson.description || '',
+      durationMinutes: lesson.durationMinutes || 30,
+      videoUrl: lesson.videoUrl || '',
+      videoSourceType: lesson.videoSourceType || 'url',
+      isPublished: lesson.isPublished !== false,
+    });
+  };
+
+  const handleSaveLesson = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!lessonModal || !lessonModal.title.trim()) return;
+
+    try {
+      if (lessonModal.mode === 'add') {
+        await addLessonApi(lessonModal.courseId, lessonModal.moduleId, {
+          title: lessonModal.title.trim(),
+          description: lessonModal.description.trim(),
+          durationMinutes: Number(lessonModal.durationMinutes),
+          videoUrl: lessonModal.videoUrl.trim(),
+          videoSourceType: lessonModal.videoSourceType,
+          isPublished: lessonModal.isPublished,
+        });
+        success(`Lesson "${lessonModal.title}" added to database!`);
+      } else if (lessonModal.lessonId) {
+        await updateLessonApi(lessonModal.courseId, lessonModal.moduleId, lessonModal.lessonId, {
+          title: lessonModal.title.trim(),
+          description: lessonModal.description.trim(),
+          durationMinutes: Number(lessonModal.durationMinutes),
+          videoUrl: lessonModal.videoUrl.trim(),
+          videoSourceType: lessonModal.videoSourceType,
+          isPublished: lessonModal.isPublished,
+        });
+        success(`Lesson "${lessonModal.title}" updated in database!`);
+      }
+      notifyDataChanged();
+      setLessonModal(null);
+      refreshAllData();
+    } catch (err: any) {
+      error(err.message || 'Failed to save lesson');
+    }
+  };
+
+  const handleDeleteLesson = async (courseId: string, moduleId: string, lessonId: string, lessonTitle: string) => {
+    if (!window.confirm(`Are you sure you want to delete lesson "${lessonTitle}"?`)) {
+      return;
+    }
+    try {
+      await deleteLessonApi(courseId, moduleId, lessonId);
+      notifyDataChanged();
+      success(`Lesson "${lessonTitle}" deleted.`);
+      refreshAllData();
+    } catch (err: any) {
+      error(err.message || 'Failed to delete lesson');
+    }
+  };
+
+  // --- EDIT STUDENT ENROLLMENTS & PROFILE ---
+  const handleOpenEditStudentAccess = (student: User) => {
+    const studentEnrs = enrollments.filter((e) => e.studentId === student.id && e.status === 'active');
+    setStudentEditModal({
+      student,
+      assignedCourseIds: studentEnrs.map((e) => e.courseId),
+      status: student.status,
+      newPassword: '',
+    });
+  };
+
+  const handleSaveStudentAccess = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!studentEditModal) return;
+
+    try {
+      await updateStudentEnrollmentsApi(
+        studentEditModal.student.id,
+        studentEditModal.assignedCourseIds
+      );
+
+      const updates: any = {};
+      if (studentEditModal.status !== studentEditModal.student.status) {
+        updates.status = studentEditModal.status;
+      }
+      if (studentEditModal.newPassword?.trim()) {
+        updates.password = studentEditModal.newPassword.trim();
+      }
+
+      if (Object.keys(updates).length > 0) {
+        await updateStudentProfileApi(studentEditModal.student.id, updates);
+      }
+
+      notifyDataChanged();
+      success(`Access permissions updated for ${studentEditModal.student.name}!`);
+      setStudentEditModal(null);
+      refreshAllData();
+    } catch (err: any) {
+      error(err.message || 'Failed to update student access');
+    }
+  };
+
+  // --- VIDEO MANAGEMENT ---
   const handleOpenVideoModal = (courseId: string, moduleId: string, lessonId: string) => {
     setTargetCourseId(courseId);
     setTargetModuleId(moduleId);
@@ -167,16 +443,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Validate video format (MP4, WebM, Quicktime)
     if (!file.type.startsWith('video/')) {
-      error('Please select a valid video file (MP4, WebM, etc.).');
+      error('Please select a valid video file (MP4, WebM).');
       return;
     }
 
-    // Size limit check (max 500MB)
-    const maxSize = 500 * 1024 * 1024;
-    if (file.size > maxSize) {
-      error('Video size exceeds 500MB limit. Please compress before uploading.');
+    if (file.size > 500 * 1024 * 1024) {
+      error('File exceeds 500MB size limit.');
       return;
     }
 
@@ -189,51 +462,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
 
     if (videoSourceMode === 'upload') {
       if (!selectedVideoFile) {
-        error('Please choose a video file from your computer.');
+        error('Please select a video file from your computer.');
         return;
       }
 
       setIsUploading(true);
-      setUploadProgress(10);
+      setUploadProgress(5);
 
       try {
-        // Simulate progress bar smoothly while saving to IndexedDB / Storage
-        const progressTimer = setInterval(() => {
-          setUploadProgress((prev) => {
-            if (prev >= 90) {
-              clearInterval(progressTimer);
-              return 90;
-            }
-            return prev + 20;
-          });
-        }, 150);
-
-        const mediaId = `vid-${targetCourseId}-${targetLessonId}-${Date.now()}`;
-        const blobUrl = await saveMediaFile(mediaId, selectedVideoFile, selectedVideoFile.name);
-
-        clearInterval(progressTimer);
-        setUploadProgress(100);
-
-        storage.updateLessonVideo(
+        await uploadLessonVideoFile(
           targetCourseId,
           targetModuleId,
           targetLessonId,
-          {
-            videoSourceType: 'upload',
-            videoUrl: blobUrl,
-            videoFileName: selectedVideoFile.name,
-            videoFileSizeBytes: selectedVideoFile.size,
-          },
-          user?.email || 'admin'
+          selectedVideoFile,
+          (percent) => setUploadProgress(percent)
         );
 
-        success(`Video file "${selectedVideoFile.name}" uploaded successfully!`);
+        notifyDataChanged();
+        success(`Video "${selectedVideoFile.name}" uploaded to server storage and saved in database!`);
         setIsUploading(false);
         setVideoModalOpen(false);
         refreshAllData();
       } catch (err: any) {
         setIsUploading(false);
-        error('Failed to upload video file: ' + err.message);
+        error('Video upload failed: ' + err.message);
       }
     } else {
       // URL Mode
@@ -242,24 +494,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
         return;
       }
 
-      storage.updateLessonVideo(
-        targetCourseId,
-        targetModuleId,
-        targetLessonId,
-        {
-          videoSourceType: 'url',
-          videoUrl: videoUrlInput.trim(),
-        },
-        user?.email || 'admin'
-      );
-
-      success('Video URL updated and saved successfully!');
-      setVideoModalOpen(false);
-      refreshAllData();
+      try {
+        await updateLessonVideoUrl(targetCourseId, targetModuleId, targetLessonId, videoUrlInput.trim());
+        notifyDataChanged();
+        success('Video URL saved to database! Enrolled students will see this video immediately.');
+        setVideoModalOpen(false);
+        refreshAllData();
+      } catch (err: any) {
+        error('Failed to save video URL: ' + err.message);
+      }
     }
   };
 
-  // --- PDF UPLOAD HANDLERS ---
+  // --- PDF UPLOADS ---
   const handlePdfFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -289,24 +536,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
 
     setIsUploadingPdf(true);
     try {
-      const mediaId = `pdf-${pdfCourseId}-${pdfLessonId}-${Date.now()}`;
-      const blobUrl = await saveMediaFile(mediaId, selectedPdfFile, selectedPdfFile.name);
+      await uploadLessonPdfResource(
+        pdfCourseId,
+        pdfModuleId,
+        pdfLessonId,
+        selectedPdfFile,
+        pdfTitle.trim(),
+        pdfDescription.trim() || undefined
+      );
 
-      const newResource: LessonResource = {
-        id: `res-${Date.now()}`,
-        title: pdfTitle.trim(),
-        description: pdfDescription.trim() || undefined,
-        type: 'pdf',
-        url: blobUrl,
-        fileName: selectedPdfFile.name,
-        fileSizeBytes: selectedPdfFile.size,
-        isPublished: true,
-        uploadedAt: new Date().toISOString(),
-      };
-
-      storage.addLessonResource(pdfCourseId, pdfModuleId, pdfLessonId, newResource, user?.email || 'admin');
-
-      success(`PDF note "${pdfTitle}" attached to course lesson!`);
+      notifyDataChanged();
+      success(`PDF note "${pdfTitle}" uploaded and saved to shared database!`);
       setIsUploadingPdf(false);
       setPdfModalOpen(false);
       setSelectedPdfFile(null);
@@ -315,11 +555,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
       refreshAllData();
     } catch (err: any) {
       setIsUploadingPdf(false);
-      error('Failed to upload PDF: ' + err.message);
+      error('Failed to upload PDF note: ' + err.message);
     }
   };
 
-  // --- STUDENT CREATION & ENROLLMENT HANDLERS ---
+  const handleDeletePdf = async (courseId: string, modId: string, lessonId: string, resourceId: string) => {
+    try {
+      await deleteLessonPdfResource(courseId, modId, lessonId, resourceId);
+      notifyDataChanged();
+      success('PDF note deleted from database.');
+      refreshAllData();
+    } catch (err: any) {
+      error('Failed to delete PDF: ' + err.message);
+    }
+  };
+
+  // --- STUDENT CREATION ---
   const handleCreateStudent = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newStudentName.trim() || !newStudentEmail.trim() || !newStudentPassword) {
@@ -328,29 +579,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
     }
 
     if (assignedCourseIds.length === 0) {
-      error('Please assign at least one course (Full Stack or Manual Testing) to the student.');
+      error('Please assign at least one course track to the student.');
       return;
     }
 
-    const res = await storage.createStudent({
-      name: newStudentName,
-      email: newStudentEmail,
-      phone: newStudentPhone || undefined,
-      plainPassword: newStudentPassword,
-      assignedCourseIds,
-      performedBy: user?.email || 'admin',
-    });
+    try {
+      await createStudentApi({
+        name: newStudentName,
+        email: newStudentEmail,
+        phone: newStudentPhone || undefined,
+        password: newStudentPassword,
+        assignedCourseIds,
+      });
 
-    if (res.success) {
-      success(res.message);
+      notifyDataChanged();
+      success(`Student account created in database! Initial password: "${newStudentPassword}"`);
       setStudentModalOpen(false);
       setNewStudentName('');
       setNewStudentEmail('');
       setNewStudentPhone('');
       setNewStudentPassword('student123');
       refreshAllData();
-    } else {
-      error(res.message);
+    } catch (err: any) {
+      error('Failed to create student: ' + err.message);
     }
   };
 
@@ -362,29 +613,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
     }
   };
 
-  // --- MEETING SCHEDULE SAVE ---
-  const handleSaveMeeting = (e: React.FormEvent) => {
+  // --- LIVE MEETING SETTINGS ---
+  const handleSaveMeeting = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!meetingUrl.trim()) {
       error('Please provide a meeting URL.');
       return;
     }
 
-    const schedule: MeetingSchedule = {
-      title: meetingTitle,
-      platform: meetingPlatform,
-      url: meetingUrl,
-      timeDescription: meetingTimeDesc,
-      date: meetingDate || undefined,
-      time: meetingTime || undefined,
-      instructions: meetingInstructions || undefined,
-      isPublished: meetingIsPublished,
-      nextSessionDate: meetingTimeDesc,
-    };
+    try {
+      const schedule: MeetingSchedule = {
+        title: meetingTitle,
+        platform: meetingPlatform,
+        url: meetingUrl,
+        timeDescription: meetingTimeDesc,
+        instructions: meetingInstructions || undefined,
+        isPublished: meetingIsPublished,
+        nextSessionDate: meetingTimeDesc,
+      };
 
-    storage.updateMeetingSchedule(meetingTargetCourse, schedule, user?.email || 'admin');
-    success(`Updated live meeting settings for course!`);
-    refreshAllData();
+      await updateCourseMeeting(meetingTargetCourse, schedule);
+      notifyDataChanged();
+      success('Live meeting settings saved to database! Enrolled students will see this updated link immediately.');
+      refreshAllData();
+    } catch (err: any) {
+      error('Failed to save meeting settings: ' + err.message);
+    }
   };
 
   return (
@@ -394,7 +648,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
         <div className="p-6 border-b border-blue-950 flex items-center justify-between">
           <div>
             <div className="text-[10px] font-bold uppercase tracking-wider text-blue-300">
-              Internal Console
+              Shared Database
             </div>
             <h2 className="text-base font-extrabold text-white">Pathfinder Admin</h2>
           </div>
@@ -493,17 +747,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
               {activeTab === 'meetings' && 'Live Classrooms & Meeting Links'}
             </h1>
             <p className="text-xs text-slate-500">
-              Real-time database records and administrative controls
+              Real-time shared persistent database records
             </p>
           </div>
 
           <div className="flex items-center gap-3">
             <button
               onClick={refreshAllData}
-              className="p-2 bg-white border border-slate-200 rounded-xl text-slate-600 hover:text-slate-900 shadow-2xs hover:bg-slate-50 transition-colors"
-              title="Refresh Data"
+              className="p-2 bg-white border border-slate-200 rounded-xl text-slate-600 hover:text-slate-900 shadow-2xs hover:bg-slate-50 transition-colors flex items-center gap-1.5 text-xs font-semibold"
+              title="Refresh Data from Server"
             >
-              <RefreshCw className="w-4 h-4" />
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">Sync Database</span>
             </button>
 
             {activeTab === 'students' && (
@@ -552,7 +807,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
                   {courses.length}
                 </div>
                 <div className="text-[11px] text-blue-600 font-semibold mt-1">
-                  Full Stack & QA
+                  Shared across devices
                 </div>
               </div>
 
@@ -576,15 +831,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
                   {enrollments.length}
                 </div>
                 <div className="text-[11px] text-purple-600 font-semibold mt-1">
-                  Course allocations
+                  Live DB Allocations
                 </div>
               </div>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Courses list */}
               <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-2xs space-y-4">
-                <h3 className="text-sm font-bold text-[#0B2147]">Active Programs</h3>
+                <h3 className="text-sm font-bold text-[#0B2147]">Courses (Live Database)</h3>
                 <div className="space-y-3">
                   {courses.map((course) => {
                     const enrCount = enrollments.filter((e) => e.courseId === course.id).length;
@@ -599,10 +853,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
                             {course.modules.length} Modules • {course.duration}
                           </div>
                         </div>
-                        <div className="text-right">
+                        <div className="flex items-center gap-3">
                           <span className="text-xs font-mono font-bold text-blue-700">
                             {enrCount} Student{enrCount === 1 ? '' : 's'}
                           </span>
+                          <button
+                            onClick={() => handleOpenEditCourse(course)}
+                            className="p-1.5 text-slate-500 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors"
+                            title="Edit Course Title & Details"
+                          >
+                            <Edit className="w-3.5 h-3.5" />
+                          </button>
                         </div>
                       </div>
                     );
@@ -610,11 +871,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
                 </div>
               </div>
 
-              {/* Quick Video Upload Action */}
               <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-2xs space-y-4">
-                <h3 className="text-sm font-bold text-[#0B2147]">Quick Desktop Video Upload</h3>
+                <h3 className="text-sm font-bold text-[#0B2147]">Direct Video Upload from Desktop</h3>
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  Select any course lesson to upload an MP4/WebM video file directly from your computer or attach an authorized video stream URL.
+                  Upload MP4/WebM videos directly from your local computer. Changes are automatically saved to the persistent database and stream directly on student dashboards.
                 </p>
                 <button
                   onClick={() => setActiveTab('videos')}
@@ -642,7 +902,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
                       src={course.thumbnailUrl}
                       alt={course.title}
                       referrerPolicy="no-referrer"
-                      className="w-20 h-14 rounded-lg object-cover border border-slate-200 shrink-0"
+                      className="w-16 h-16 rounded-xl object-cover border border-slate-200 shrink-0"
                     />
                     <div>
                       <div className="flex items-center gap-2">
@@ -660,58 +920,148 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
 
                   <div className="flex items-center gap-2 shrink-0">
                     <button
+                      onClick={() => handleOpenEditCourse(course)}
+                      className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5"
+                    >
+                      <Edit className="w-3.5 h-3.5" />
+                      <span>Edit Info</span>
+                    </button>
+                    <button
                       onClick={() => onNavigate('learn', { courseId: course.id })}
-                      className="px-3.5 py-2 bg-blue-50 hover:bg-blue-100 text-blue-800 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5"
+                      className="px-3 py-2 bg-blue-50 hover:bg-blue-100 text-blue-800 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5"
                     >
                       <Eye className="w-3.5 h-3.5" />
-                      <span>Preview Course</span>
+                      <span>Student View</span>
                     </button>
                   </div>
                 </div>
 
-                {/* Modules & Lessons with Video & Resource indicators */}
+                {/* Modules & Lessons */}
                 <div className="p-6 bg-slate-50/50 space-y-4">
-                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700">
-                    Syllabus Modules & Lesson Assets
-                  </h4>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700">
+                        Modules & Video Lessons
+                      </h4>
+                      <p className="text-[11px] text-slate-500">
+                        Organize curriculum sections and manage lesson video content.
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => handleOpenAddModule(course.id)}
+                      className="px-3 py-1.5 bg-[#0B2147] hover:bg-blue-900 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-2xs"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Add Module</span>
+                    </button>
+                  </div>
+
                   <div className="space-y-3">
-                    {course.modules.map((mod) => (
-                      <div key={mod.id} className="bg-white rounded-xl border border-slate-200 p-4 space-y-2">
-                        <div className="text-xs font-bold text-slate-800 flex items-center justify-between">
-                          <span>{mod.title}</span>
-                          <span className="text-[11px] text-slate-400 font-mono">{mod.lessons.length} Lessons</span>
-                        </div>
-
-                        <div className="pt-2 border-t border-slate-100 space-y-2">
-                          {mod.lessons.map((lesson) => (
-                            <div
-                              key={lesson.id}
-                              className="flex items-center justify-between text-xs p-2.5 rounded-lg hover:bg-slate-50 border border-slate-100 bg-white"
-                            >
-                              <div className="flex items-center gap-2.5 truncate max-w-md">
-                                <Video className="w-3.5 h-3.5 text-blue-600 shrink-0" />
-                                <span className="font-semibold text-slate-800 truncate">{lesson.title}</span>
-                              </div>
-
-                              <div className="flex items-center gap-3 shrink-0">
-                                <span className={`text-[10px] font-mono px-2 py-0.5 rounded ${
-                                  lesson.videoSourceType === 'upload' ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-slate-100 text-slate-700'
-                                }`}>
-                                  {lesson.videoSourceType === 'upload' ? 'Desktop Upload' : 'Video URL'}
-                                </span>
-
-                                <button
-                                  onClick={() => handleOpenVideoModal(course.id, mod.id, lesson.id)}
-                                  className="px-2.5 py-1 bg-white border border-slate-200 hover:border-blue-400 text-blue-700 rounded text-[11px] font-semibold transition-colors"
-                                >
-                                  Manage Video
-                                </button>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
+                    {course.modules.length === 0 ? (
+                      <div className="p-6 text-center text-xs text-slate-400 bg-white rounded-xl border border-slate-200">
+                        No modules created yet. Click "Add Module" to start structuring this course.
                       </div>
-                    ))}
+                    ) : (
+                      course.modules.map((mod) => (
+                        <div key={mod.id} className="bg-white rounded-xl border border-slate-200 p-4 space-y-3 shadow-2xs">
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                            <div>
+                              <div className="text-xs font-bold text-slate-900 flex items-center gap-2">
+                                <span>{mod.title}</span>
+                                <span className="text-[10px] text-blue-700 font-mono bg-blue-50 px-2 py-0.5 rounded">
+                                  {mod.lessons.length} Lesson{mod.lessons.length === 1 ? '' : 's'}
+                                </span>
+                              </div>
+                              {mod.description && (
+                                <p className="text-[11px] text-slate-500 mt-0.5">{mod.description}</p>
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-1.5 self-end sm:self-auto">
+                              <button
+                                onClick={() => handleOpenAddLesson(course.id, mod.id)}
+                                className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-800 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1"
+                                title="Add Lesson to this module"
+                              >
+                                <Plus className="w-3 h-3" />
+                                <span>Add Lesson</span>
+                              </button>
+                              <button
+                                onClick={() => handleOpenEditModule(course.id, mod)}
+                                className="p-1.5 text-slate-500 hover:text-blue-700 hover:bg-slate-100 rounded-lg transition-colors"
+                                title="Edit Module Title"
+                              >
+                                <Edit className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={() => handleDeleteModule(course.id, mod.id, mod.title)}
+                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+                                title="Delete Module"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="space-y-2">
+                            {mod.lessons.length === 0 ? (
+                              <p className="text-[11px] text-slate-400 italic py-1">No lessons in this module yet.</p>
+                            ) : (
+                              mod.lessons.map((lesson) => (
+                                <div
+                                  key={lesson.id}
+                                  className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs p-2.5 rounded-lg hover:bg-slate-50 border border-slate-100 bg-white"
+                                >
+                                  <div className="flex items-center gap-2.5 truncate max-w-md">
+                                    <Video className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                                    <div className="truncate">
+                                      <span className="font-semibold text-slate-800 truncate block">{lesson.title}</span>
+                                      <span className="text-[10px] text-slate-400">
+                                        {lesson.durationMinutes} mins
+                                        {lesson.resources && lesson.resources.length > 0 && ` · ${lesson.resources.length} PDF note(s)`}
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto">
+                                    <span className={`text-[10px] font-mono px-2 py-0.5 rounded ${
+                                      lesson.videoSourceType === 'upload' ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-slate-100 text-slate-700'
+                                    }`}>
+                                      {lesson.videoSourceType === 'upload' ? 'Desktop Upload' : 'Video URL'}
+                                    </span>
+
+                                    <button
+                                      onClick={() => handleOpenVideoModal(course.id, mod.id, lesson.id)}
+                                      className="px-2 py-1 bg-white border border-slate-200 hover:border-blue-400 text-blue-700 rounded text-[11px] font-semibold transition-colors flex items-center gap-1"
+                                      title="Upload or Change Video"
+                                    >
+                                      <Upload className="w-3 h-3" />
+                                      <span>Video</span>
+                                    </button>
+
+                                    <button
+                                      onClick={() => handleOpenEditLesson(course.id, mod.id, lesson)}
+                                      className="p-1 text-slate-500 hover:text-blue-700 hover:bg-slate-100 rounded transition-colors"
+                                      title="Edit Lesson Information"
+                                    >
+                                      <Edit className="w-3.5 h-3.5" />
+                                    </button>
+
+                                    <button
+                                      onClick={() => handleDeleteLesson(course.id, mod.id, lesson.id, lesson.title)}
+                                      className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-colors"
+                                      title="Delete Lesson"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </div>
               </div>
@@ -726,7 +1076,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
               <div>
                 <h3 className="text-base font-bold text-[#0B2147]">Direct Video File Upload from Computer</h3>
                 <p className="text-xs text-slate-500">
-                  Select a course and lesson below to upload an MP4/WebM video file directly from your local desktop, or specify an external video URL.
+                  Select a lesson to upload an MP4/WebM video file from your computer or set an authorized stream URL.
                 </p>
               </div>
 
@@ -836,11 +1186,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
                               </div>
 
                               <button
-                                onClick={() => {
-                                  storage.deleteLessonResource(course.id, modId, lessonId, resource.id, user?.email || 'admin');
-                                  success(`Deleted resource "${resource.title}".`);
-                                  refreshAllData();
-                                }}
+                                onClick={() => handleDeletePdf(course.id, modId, lessonId, resource.id)}
                                 className="text-slate-400 hover:text-rose-600 p-1 transition-colors"
                                 title="Delete PDF"
                               >
@@ -886,7 +1232,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
                       <th className="py-3 px-4">Student</th>
                       <th className="py-3 px-4">Contact</th>
                       <th className="py-3 px-4">Assigned Programs</th>
-                      <th className="py-3 px-4">Account Status</th>
+                      <th className="py-3 px-4">Status</th>
                       <th className="py-3 px-4 text-right">Actions</th>
                     </tr>
                   </thead>
@@ -907,18 +1253,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
                           <tr key={student.id} className="hover:bg-slate-50/80 transition-colors">
                             <td className="py-3 px-4">
                               <div className="flex items-center gap-3">
-                                {student.avatarUrl ? (
-                                  <img
-                                    src={student.avatarUrl}
-                                    alt={student.name}
-                                    referrerPolicy="no-referrer"
-                                    className="w-8 h-8 rounded-full object-cover border border-slate-200"
-                                  />
-                                ) : (
-                                  <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-800 font-bold flex items-center justify-center">
-                                    {student.name.charAt(0)}
-                                  </div>
-                                )}
+                                <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-800 font-bold flex items-center justify-center">
+                                  {student.name.charAt(0)}
+                                </div>
                                 <div>
                                   <div className="font-bold text-slate-900">{student.name}</div>
                                   <div className="text-[11px] text-slate-400 font-mono">{student.email}</div>
@@ -956,24 +1293,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
                               </span>
                             </td>
                             <td className="py-3 px-4 text-right">
-                              <div className="flex items-center justify-end gap-2">
-                                <button
-                                  onClick={() => {
-                                    const nextStatus = student.status === 'active' ? 'suspended' : 'active';
-                                    storage.setStudentStatus(student.id, nextStatus, user?.email || 'admin');
-                                    success(`Student ${student.name} set to ${nextStatus}.`);
-                                    refreshAllData();
-                                  }}
-                                  className="p-1.5 text-slate-400 hover:text-slate-700 rounded hover:bg-slate-100"
-                                  title={student.status === 'active' ? 'Deactivate' : 'Reactivate'}
-                                >
-                                  {student.status === 'active' ? (
-                                    <XCircle className="w-4 h-4 text-rose-500" />
-                                  ) : (
-                                    <CheckCircle className="w-4 h-4 text-emerald-500" />
-                                  )}
-                                </button>
-                              </div>
+                              <button
+                                onClick={() => handleOpenEditStudentAccess(student)}
+                                className="px-3 py-1.5 bg-[#0B2147] hover:bg-blue-900 text-white rounded-lg text-xs font-bold transition-all shadow-2xs"
+                                title="Edit course tracks, password, or status"
+                              >
+                                Manage Access
+                              </button>
                             </td>
                           </tr>
                         );
@@ -1095,6 +1421,103 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
         )}
       </main>
 
+      {/* EDIT COURSE DETAILS MODAL */}
+      {courseEditModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-200">
+            <h3 className="text-base font-bold text-[#0B2147] mb-1">Edit Course Information</h3>
+            <p className="text-xs text-slate-500 mb-4">
+              Updates to title, description, and duration save directly to the shared database.
+            </p>
+
+            <form onSubmit={handleSaveCourseDetails} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Course Title</label>
+                <input
+                  type="text"
+                  required
+                  value={editCourseTitle}
+                  onChange={(e) => setEditCourseTitle(e.target.value)}
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0B2147]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Short Summary</label>
+                <input
+                  type="text"
+                  required
+                  value={editCourseSummary}
+                  onChange={(e) => setEditCourseSummary(e.target.value)}
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0B2147]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Full Description</label>
+                <textarea
+                  required
+                  value={editCourseDesc}
+                  onChange={(e) => setEditCourseDesc(e.target.value)}
+                  rows={4}
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0B2147]"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Duration</label>
+                  <input
+                    type="text"
+                    required
+                    value={editCourseDuration}
+                    onChange={(e) => setEditCourseDuration(e.target.value)}
+                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0B2147]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Price (₹)</label>
+                  <input
+                    type="number"
+                    required
+                    value={editCoursePrice}
+                    onChange={(e) => setEditCoursePrice(Number(e.target.value))}
+                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0B2147]"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Thumbnail Image URL</label>
+                <input
+                  type="text"
+                  value={editCourseThumbnail}
+                  onChange={(e) => setEditCourseThumbnail(e.target.value)}
+                  placeholder="/pathfinder_logo.jpg or image URL"
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0B2147]"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setCourseEditModal(false)}
+                  className="px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-1.5 text-xs font-bold text-white bg-[#0B2147] hover:bg-blue-900 rounded-lg"
+                >
+                  Save to Database
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* VIDEO UPLOAD / URL MODAL */}
       {videoModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
@@ -1104,7 +1527,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
               Upload a video file from your computer or provide an authorized stream URL.
             </p>
 
-            {/* Mode Toggle */}
             <div className="flex p-1 bg-slate-100 rounded-xl mb-4">
               <button
                 type="button"
@@ -1154,7 +1576,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
                   {isUploading && (
                     <div className="space-y-1">
                       <div className="flex justify-between text-[11px] font-bold text-slate-700">
-                        <span>Uploading file...</span>
+                        <span>Uploading file to database storage...</span>
                         <span>{uploadProgress}%</span>
                       </div>
                       <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
@@ -1168,13 +1590,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
                 </div>
               ) : (
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Video Stream URL</label>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Video Stream or Embed URL</label>
                   <input
                     type="url"
                     required
                     value={videoUrlInput}
                     onChange={(e) => setVideoUrlInput(e.target.value)}
-                    placeholder="https://commondatastorage.googleapis.com/... or https://..."
+                    placeholder="https://... or https://youtube.com/watch?v=..."
                     className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0B2147]"
                   />
                 </div>
@@ -1237,7 +1659,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
                   value={pdfLessonId}
                   onChange={(e) => {
                     setPdfLessonId(e.target.value);
-                    // Find matching module
                     const c = courses.find((item) => item.id === pdfCourseId);
                     const m = c?.modules.find((mod) => mod.lessons.some((l) => l.id === e.target.value));
                     if (m) setPdfModuleId(m.id);
@@ -1397,6 +1818,240 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
                   className="px-4 py-1.5 text-xs font-bold text-white bg-[#0B2147] hover:bg-blue-900 rounded-lg"
                 >
                   Create & Enroll
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODULE ADD / EDIT MODAL */}
+      {moduleModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200">
+            <h3 className="text-base font-bold text-[#0B2147] mb-1">
+              {moduleModal.mode === 'add' ? 'Add Course Module' : 'Edit Module Details'}
+            </h3>
+            <p className="text-xs text-slate-500 mb-4">
+              Saved directly to the shared database. Changes will be visible immediately on student dashboards.
+            </p>
+
+            <form onSubmit={handleSaveModule} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Module Title</label>
+                <input
+                  type="text"
+                  required
+                  value={moduleModal.title}
+                  onChange={(e) => setModuleModal({ ...moduleModal, title: e.target.value })}
+                  placeholder="e.g. Module 3: Advanced State & API Integrations"
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0B2147]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Description (optional)</label>
+                <textarea
+                  value={moduleModal.description}
+                  onChange={(e) => setModuleModal({ ...moduleModal, description: e.target.value })}
+                  placeholder="Key concepts, syllabus topics, and learning objectives..."
+                  rows={3}
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0B2147]"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setModuleModal(null)}
+                  className="px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-1.5 text-xs font-bold text-white bg-[#0B2147] hover:bg-blue-900 rounded-lg"
+                >
+                  Save Module
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* LESSON ADD / EDIT MODAL */}
+      {lessonModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-200">
+            <h3 className="text-base font-bold text-[#0B2147] mb-1">
+              {lessonModal.mode === 'add' ? 'Add Lesson to Module' : 'Edit Lesson Information'}
+            </h3>
+            <p className="text-xs text-slate-500 mb-4">
+              Configured lessons appear inside the full-screen course player for enrolled students.
+            </p>
+
+            <form onSubmit={handleSaveLesson} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Lesson Title</label>
+                <input
+                  type="text"
+                  required
+                  value={lessonModal.title}
+                  onChange={(e) => setLessonModal({ ...lessonModal, title: e.target.value })}
+                  placeholder="e.g. Asynchronous Code & Event Loop Architecture"
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0B2147]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Lesson Description</label>
+                <textarea
+                  required
+                  value={lessonModal.description}
+                  onChange={(e) => setLessonModal({ ...lessonModal, description: e.target.value })}
+                  rows={3}
+                  placeholder="Explanation, learning goals, practical exercises..."
+                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0B2147]"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Duration (minutes)</label>
+                  <input
+                    type="number"
+                    required
+                    min={1}
+                    value={lessonModal.durationMinutes}
+                    onChange={(e) => setLessonModal({ ...lessonModal, durationMinutes: Number(e.target.value) })}
+                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0B2147]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Video Stream / Embed URL</label>
+                  <input
+                    type="text"
+                    value={lessonModal.videoUrl}
+                    onChange={(e) => setLessonModal({ ...lessonModal, videoUrl: e.target.value })}
+                    placeholder="https://... or YouTube URL (or upload later)"
+                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0B2147]"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 pt-1">
+                <input
+                  type="checkbox"
+                  id="lessonPublished"
+                  checked={lessonModal.isPublished}
+                  onChange={(e) => setLessonModal({ ...lessonModal, isPublished: e.target.checked })}
+                  className="rounded text-blue-600 focus:ring-[#0B2147]"
+                />
+                <label htmlFor="lessonPublished" className="text-xs text-slate-700 font-medium">
+                  Publish this lesson immediately to student syllabus
+                </label>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setLessonModal(null)}
+                  className="px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-1.5 text-xs font-bold text-white bg-[#0B2147] hover:bg-blue-900 rounded-lg"
+                >
+                  Save Lesson
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* EDIT STUDENT ACCESS & ENROLLMENTS MODAL */}
+      {studentEditModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200">
+            <h3 className="text-base font-bold text-[#0B2147] mb-1">
+              Manage Student Course Access
+            </h3>
+            <p className="text-xs text-slate-500 mb-4">
+              Assign or revoke enrolled course tracks for <strong className="text-slate-800">{studentEditModal.student.name}</strong> ({studentEditModal.student.email}).
+            </p>
+
+            <form onSubmit={handleSaveStudentAccess} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-2">Assigned Course Programs</label>
+                <div className="space-y-2">
+                  {courses.map((course) => {
+                    const isEnrolled = studentEditModal.assignedCourseIds.includes(course.id);
+                    return (
+                      <label
+                        key={course.id}
+                        className={`flex items-center gap-2.5 p-3 rounded-xl border cursor-pointer text-xs transition-colors ${
+                          isEnrolled ? 'bg-blue-50/70 border-blue-300' : 'bg-white border-slate-200 hover:bg-slate-50'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isEnrolled}
+                          onChange={() => {
+                            const updated = isEnrolled
+                              ? studentEditModal.assignedCourseIds.filter((id) => id !== course.id)
+                              : [...studentEditModal.assignedCourseIds, course.id];
+                            setStudentEditModal({ ...studentEditModal, assignedCourseIds: updated });
+                          }}
+                          className="rounded text-blue-600 focus:ring-[#0B2147]"
+                        />
+                        <span className="font-semibold text-slate-900">{course.title}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 pt-2">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Account Status</label>
+                  <select
+                    value={studentEditModal.status}
+                    onChange={(e) => setStudentEditModal({ ...studentEditModal, status: e.target.value as any })}
+                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0B2147]"
+                  >
+                    <option value="active">Active</option>
+                    <option value="suspended">Suspended / Deactivated</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Reset Password (optional)</label>
+                  <input
+                    type="password"
+                    placeholder="New password..."
+                    value={studentEditModal.newPassword || ''}
+                    onChange={(e) => setStudentEditModal({ ...studentEditModal, newPassword: e.target.value })}
+                    className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0B2147]"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setStudentEditModal(null)}
+                  className="px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-1.5 text-xs font-bold text-white bg-[#0B2147] hover:bg-blue-900 rounded-lg"
+                >
+                  Save Access Settings
                 </button>
               </div>
             </form>

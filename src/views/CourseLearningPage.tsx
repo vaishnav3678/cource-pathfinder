@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../components/common/Toast';
-import { storage } from '../services/storage';
+import { fetchCourseById, fetchEnrollments, toggleLessonProgressApi, subscribeDataChanges } from '../services/api';
 import { Course, Lesson, LessonResource } from '../types';
 import confetti from 'canvas-confetti';
 import {
@@ -18,10 +18,12 @@ import {
   ExternalLink,
   ArrowLeft,
   Eye,
-  Save,
   Menu,
   X,
-  Upload,
+  Maximize,
+  AlertCircle,
+  RefreshCw,
+  Edit3,
 } from 'lucide-react';
 
 interface CourseLearningPageProps {
@@ -37,78 +39,96 @@ export const CourseLearningPage: React.FC<CourseLearningPageProps> = ({ courseId
   const [activeLesson, setActiveLesson] = useState<Lesson | null>(null);
   const [completedLessonIds, setCompletedLessonIds] = useState<string[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [activeTab, setActiveTab] = useState<'overview' | 'resources' | 'notes' | 'meeting'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'resources' | 'meeting'>('overview');
+  const [videoError, setVideoError] = useState(false);
+  const [activePdfModal, setActivePdfModal] = useState<LessonResource | null>(null);
 
-  // PDF Preview
-  const [activePdfPreview, setActivePdfPreview] = useState<LessonResource | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const playerContainerRef = useRef<HTMLDivElement>(null);
 
-  // Student study notes
-  const [lessonNote, setLessonNote] = useState('');
-  const [noteSaving, setNoteSaving] = useState(false);
+  // Load course and enrollment directly from shared backend
+  const loadData = async (silent: boolean = false) => {
+    try {
+      const loadedCourse = await fetchCourseById(courseId);
+      setCourse(loadedCourse);
+
+      // Verify student authorization
+      if (!isAdmin && user) {
+        const studentEnrollments = await fetchEnrollments(user.id);
+        const enr = studentEnrollments.find((e) => e.courseId === courseId && e.status === 'active');
+        if (!enr) {
+          if (!silent) {
+            error(`Access Denied: You are not enrolled in "${loadedCourse.title}".`);
+            onNavigate('dashboard');
+          }
+          return;
+        }
+        setCompletedLessonIds(enr.completedLessonIds || []);
+
+        // Resume lesson or keep active
+        setActiveLesson((prev) => {
+          if (prev) {
+            // Find updated lesson from fresh course data
+            for (const mod of loadedCourse.modules) {
+              const fresh = mod.lessons.find((l) => l.id === prev.id);
+              if (fresh) return fresh;
+            }
+          }
+          // Default first published lesson
+          for (const mod of loadedCourse.modules) {
+            const first = mod.lessons.find((l) => l.isPublished);
+            if (first) return first;
+          }
+          return null;
+        });
+      } else if (isAdmin) {
+        // Admin preview mode
+        setActiveLesson((prev) => {
+          if (prev) {
+            for (const mod of loadedCourse.modules) {
+              const fresh = mod.lessons.find((l) => l.id === prev.id);
+              if (fresh) return fresh;
+            }
+          }
+          return loadedCourse.modules[0]?.lessons[0] || null;
+        });
+      }
+    } catch (err: any) {
+      if (!silent) {
+        error(err.message || 'Error loading course content');
+        onNavigate('dashboard');
+      }
+    }
+  };
 
   useEffect(() => {
-    const loadedCourse = storage.getCourseById(courseId);
-    if (!loadedCourse) {
-      error('Course not found.');
-      onNavigate('dashboard');
-      return;
-    }
-    setCourse(loadedCourse);
+    loadData();
 
-    // Strict Authorization check: A student MUST be enrolled in this course to access it!
-    if (!isAdmin && user) {
-      const isAuthorized = storage.isStudentAuthorizedForCourse(user.id, courseId);
-      if (!isAuthorized) {
-        error(`Access Denied: You are not authorized for "${loadedCourse.title}". Only your enrolled programs can be opened.`);
-        onNavigate('dashboard');
-        return;
-      }
+    // Re-fetch automatically when window regains focus to reflect Admin updates in real-time
+    const handleFocus = () => loadData(true);
+    window.addEventListener('focus', handleFocus);
 
-      const enrollment = storage.getStudentEnrollments(user.id).find((e) => e.courseId === courseId);
-      setCompletedLessonIds(enrollment?.completedLessonIds || []);
+    // Instant cross-tab sync when Admin saves changes
+    const unsubscribe = subscribeDataChanges(() => {
+      loadData(true);
+    });
 
-      // Find resume lesson
-      let targetLesson: Lesson | null = null;
-      if (enrollment?.lastWatchedLessonId) {
-        for (const mod of loadedCourse.modules) {
-          const found = mod.lessons.find((l) => l.id === enrollment.lastWatchedLessonId && l.isPublished);
-          if (found) {
-            targetLesson = found;
-            break;
-          }
-        }
-      }
+    // Polling every 4 seconds to sync admin updates across browser sessions
+    const interval = setInterval(() => {
+      loadData(true);
+    }, 4000);
 
-      if (!targetLesson) {
-        for (const mod of loadedCourse.modules) {
-          const first = mod.lessons.find((l) => l.isPublished);
-          if (first) {
-            targetLesson = first;
-            break;
-          }
-        }
-      }
-
-      if (targetLesson) {
-        setActiveLesson(targetLesson);
-      }
-    } else if (isAdmin) {
-      info('Administrator Preview Mode');
-      const firstLesson = loadedCourse.modules[0]?.lessons[0] || null;
-      setActiveLesson(firstLesson);
-    }
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      unsubscribe();
+      clearInterval(interval);
+    };
   }, [courseId, user, isAdmin]);
 
-  // Load notes when lesson changes
+  // Reset video error on lesson change
   useEffect(() => {
-    if (user && activeLesson) {
-      const existing = storage.getNotes(user.id, activeLesson.id);
-      setLessonNote(existing?.content || '');
-      if (!isAdmin) {
-        storage.updateLastWatched(user.id, courseId, activeLesson.id);
-      }
-    }
-  }, [activeLesson, user]);
+    setVideoError(false);
+  }, [activeLesson?.id, activeLesson?.videoUrl]);
 
   const allLessons = useMemo(() => {
     if (!course) return [];
@@ -132,82 +152,120 @@ export const CourseLearningPage: React.FC<CourseLearningPageProps> = ({ courseId
   const progressPercent = totalLessonsCount > 0 ? Math.round((completedCount / totalLessonsCount) * 100) : 0;
   const isCurrentLessonCompleted = activeLesson ? completedLessonIds.includes(activeLesson.id) : false;
 
-  const handleToggleComplete = () => {
+  const handleToggleComplete = async () => {
     if (!user || !activeLesson) return;
     if (isAdmin) {
-      info('Lesson progress tracking is disabled in Admin preview.');
+      info('Lesson completion tracking is disabled in Admin preview.');
       return;
     }
 
-    const isNowDone = storage.toggleLessonCompleted(user.id, courseId, activeLesson.id);
-    if (isNowDone) {
-      setCompletedLessonIds((prev) => [...prev, activeLesson.id]);
-      success('Lesson marked as complete! Great progress.');
-      confetti({
-        particleCount: 40,
-        spread: 50,
-        origin: { y: 0.8 },
-      });
-    } else {
-      setCompletedLessonIds((prev) => prev.filter((id) => id !== activeLesson.id));
-      info('Lesson marked as incomplete.');
+    try {
+      const res = await toggleLessonProgressApi(user.id, courseId, activeLesson.id);
+      setCompletedLessonIds(res.completedLessonIds);
+      if (res.isCompleted) {
+        success('Lesson marked as complete! Great work.');
+        confetti({
+          particleCount: 45,
+          spread: 60,
+          origin: { y: 0.8 },
+        });
+      } else {
+        info('Lesson marked as incomplete.');
+      }
+    } catch (err: any) {
+      error(err.message || 'Failed to update progress');
     }
   };
 
-  const handleSaveNote = () => {
-    if (!user || !activeLesson) return;
-    setNoteSaving(true);
-    storage.saveNote({
-      id: `note-${user.id}-${activeLesson.id}`,
-      studentId: user.id,
-      courseId,
-      lessonId: activeLesson.id,
-      content: lessonNote,
-      updatedAt: new Date().toISOString(),
-    });
-    setNoteSaving(false);
-    success('Study notes saved.');
+  // Browser Fullscreen API trigger for video
+  const handleFullscreenVideo = () => {
+    if (playerContainerRef.current) {
+      if (!document.fullscreenElement) {
+        playerContainerRef.current.requestFullscreen().catch((err) => {
+          console.error('Error enabling fullscreen mode:', err);
+        });
+      } else {
+        document.exitFullscreen();
+      }
+    } else if (videoRef.current) {
+      if (videoRef.current.requestFullscreen) {
+        videoRef.current.requestFullscreen();
+      }
+    }
+  };
+
+  // Helper: check if video URL is an embed (e.g. YouTube, Vimeo, Google Drive)
+  const isEmbedVideo = (url?: string) => {
+    if (!url) return false;
+    return (
+      url.includes('youtube.com') ||
+      url.includes('youtu.be') ||
+      url.includes('vimeo.com') ||
+      url.includes('drive.google.com') ||
+      url.includes('/embed/') ||
+      url.includes('/preview')
+    );
+  };
+
+  const getEmbedUrl = (url: string) => {
+    if (url.includes('youtube.com/watch?v=')) {
+      const v = url.split('watch?v=')[1]?.split('&')[0];
+      return `https://www.youtube.com/embed/${v}?autoplay=0&rel=0`;
+    }
+    if (url.includes('youtu.be/')) {
+      const id = url.split('youtu.be/')[1]?.split('?')[0];
+      return `https://www.youtube.com/embed/${id}?autoplay=0&rel=0`;
+    }
+    if (url.includes('vimeo.com/') && !url.includes('player.vimeo.com')) {
+      const id = url.split('vimeo.com/')[1]?.split('?')[0];
+      return `https://player.vimeo.com/video/${id}`;
+    }
+    if (url.includes('drive.google.com/file/d/')) {
+      return url.replace('/view', '/preview').replace('/edit', '/preview');
+    }
+    return url;
   };
 
   if (!course) {
     return (
-      <div className="min-h-screen flex items-center justify-center p-6 bg-slate-50">
-        <div className="text-center">
-          <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-          <p className="text-xs text-slate-500 font-semibold">Loading course content...</p>
+      <div className="h-screen w-screen flex items-center justify-center bg-slate-900 text-white">
+        <div className="text-center space-y-3">
+          <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto" />
+          <p className="text-xs text-slate-400">Loading course environment...</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-slate-100 flex flex-col">
-      {/* Top Learning Bar */}
-      <div className="bg-[#0B2147] text-white px-4 sm:px-6 py-3 flex items-center justify-between border-b border-blue-950 shrink-0">
-        <div className="flex items-center gap-3">
+    <div className="h-screen w-screen overflow-hidden flex flex-col bg-slate-950 text-white select-none">
+      {/* 1. Header Bar: Full Width, Concise */}
+      <header className="h-14 px-4 sm:px-6 bg-[#0B2147] border-b border-blue-900 flex items-center justify-between shrink-0 z-20">
+        <div className="flex items-center gap-3 truncate">
           <button
-            onClick={() => onNavigate(isAdmin ? 'admin' : 'dashboard')}
-            className="p-1.5 hover:bg-white/10 rounded-lg text-slate-300 hover:text-white transition-colors"
+            onClick={() => onNavigate('dashboard')}
+            className="p-1.5 hover:bg-white/10 rounded-lg text-slate-300 hover:text-white transition-colors flex items-center gap-1.5 text-xs font-semibold shrink-0"
             title="Back to Dashboard"
           >
-            <ArrowLeft className="w-5 h-5" />
+            <ArrowLeft className="w-4 h-4" />
+            <span className="hidden sm:inline">Back to Dashboard</span>
           </button>
-          <div>
-            <div className="text-[10px] font-bold text-blue-200 uppercase tracking-wider flex items-center gap-2">
-              <span>{course.category === 'development' ? 'Full Stack Track' : 'Manual Testing Track'}</span>
-              {isAdmin && (
-                <span className="px-1.5 py-0.2 rounded text-[9px] bg-amber-500 text-slate-900 font-bold">
-                  Admin Preview
-                </span>
-              )}
-            </div>
-            <h1 className="text-sm font-bold truncate max-w-xs sm:max-w-md">{course.title}</h1>
+
+          <div className="h-4 w-px bg-blue-800 hidden sm:block" />
+
+          <div className="truncate">
+            <span className="text-[10px] font-bold text-blue-300 uppercase tracking-wider block leading-tight">
+              {course.category === 'development' ? 'Full Stack Track' : 'Manual Testing Track'}
+            </span>
+            <h1 className="text-xs sm:text-sm font-bold text-white truncate leading-tight">
+              {course.title}
+            </h1>
           </div>
         </div>
 
-        {/* Progress & Syllabus Toggle */}
-        <div className="flex items-center gap-4">
-          <div className="hidden sm:flex items-center gap-2.5 text-xs text-slate-300">
+        {/* Right Header Actions */}
+        <div className="flex items-center gap-3 shrink-0">
+          <div className="hidden md:flex items-center gap-2 text-xs text-slate-300">
             <span>Progress:</span>
             <div className="w-24 h-2 bg-slate-800 rounded-full overflow-hidden">
               <div
@@ -221,81 +279,108 @@ export const CourseLearningPage: React.FC<CourseLearningPageProps> = ({ courseId
           <button
             onClick={() => setSidebarOpen(!sidebarOpen)}
             className="p-2 bg-white/10 hover:bg-white/20 rounded-lg text-white transition-colors flex items-center gap-1.5 text-xs font-semibold"
+            title="Toggle Syllabus Sidebar"
           >
             {sidebarOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
-            <span className="hidden sm:inline">{sidebarOpen ? 'Hide Syllabus' : 'Show Syllabus'}</span>
+            <span className="hidden sm:inline">{sidebarOpen ? 'Hide Syllabus' : 'Syllabus'}</span>
           </button>
         </div>
-      </div>
+      </header>
 
-      {/* Main Learning Workspace */}
-      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
-        {/* Left Video Player & Content */}
-        <div className="flex-1 flex flex-col overflow-y-auto">
-          {/* Video Container (supports uploaded video files & URLs) */}
-          <div className="bg-black relative aspect-video max-h-[65vh] w-full flex items-center justify-center">
-            {activeLesson ? (
-              <video
-                key={activeLesson.id + activeLesson.videoUrl}
-                src={activeLesson.videoUrl}
-                controls
-                playsInline
-                className="w-full h-full object-contain"
-              >
-                Your browser does not support the video tag.
-              </video>
+      {/* 2. Main Body: Split Viewport */}
+      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative">
+        {/* Left Viewport: Video & Tabs (Fills remaining height) */}
+        <div className="flex-1 flex flex-col overflow-y-auto bg-slate-900">
+          {/* Prominent Video Player Container */}
+          <div
+            ref={playerContainerRef}
+            className="relative bg-black aspect-video max-h-[58vh] sm:max-h-[62vh] w-full flex items-center justify-center shrink-0 group"
+          >
+            {activeLesson && activeLesson.videoUrl ? (
+              isEmbedVideo(activeLesson.videoUrl) ? (
+                <iframe
+                  src={getEmbedUrl(activeLesson.videoUrl)}
+                  title={activeLesson.title}
+                  className="w-full h-full border-0"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                  allowFullScreen
+                />
+              ) : videoError ? (
+                <div className="text-center p-6 text-slate-400 space-y-2">
+                  <AlertCircle className="w-10 h-10 text-amber-500 mx-auto" />
+                  <p className="text-xs text-slate-300 font-semibold">Video stream cannot be loaded.</p>
+                  <p className="text-[11px] text-slate-500">Please verify the video URL or re-upload the MP4 in Admin Panel.</p>
+                </div>
+              ) : (
+                <>
+                  <video
+                    ref={videoRef}
+                    key={activeLesson.id + activeLesson.videoUrl}
+                    src={activeLesson.videoUrl}
+                    controls
+                    playsInline
+                    onError={() => setVideoError(true)}
+                    className="w-full h-full object-contain"
+                  >
+                    Your browser does not support the video tag.
+                  </video>
+
+                  {/* Separate Fullscreen button */}
+                  <button
+                    onClick={handleFullscreenVideo}
+                    className="absolute top-3 right-3 p-2 bg-black/60 hover:bg-black/90 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-xs text-xs font-semibold flex items-center gap-1 shadow-md"
+                    title="Fullscreen Video"
+                  >
+                    <Maximize className="w-4 h-4" />
+                  </button>
+                </>
+              )
             ) : (
-              <div className="text-center text-slate-400 p-8">
-                <BookOpen className="w-12 h-12 mx-auto mb-2 opacity-40" />
-                <p className="text-sm">Select a lesson from the syllabus</p>
+              <div className="text-center p-8 text-slate-500 space-y-2">
+                <BookOpen className="w-12 h-12 mx-auto opacity-30" />
+                <p className="text-xs font-medium">No video uploaded for this lesson yet.</p>
               </div>
             )}
           </div>
 
           {/* Lesson Metadata Bar */}
           {activeLesson && (
-            <div className="bg-white border-b border-slate-200 px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div>
-                <div className="flex items-center gap-2 text-xs text-slate-500 mb-1">
-                  <span className="font-semibold text-blue-700">
+            <div className="p-4 sm:p-5 bg-slate-950 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 text-[11px] text-slate-400 mb-1">
+                  <span className="text-blue-400 font-semibold">
                     Lesson {currentIndex + 1} of {totalLessonsCount}
                   </span>
-                  <span aria-hidden="true">·</span>
+                  <span>·</span>
                   <span className="flex items-center gap-1">
-                    <Clock className="w-3.5 h-3.5 text-slate-400" />
+                    <Clock className="w-3 h-3" />
                     {activeLesson.durationMinutes} mins
                   </span>
-                  {activeLesson.videoSourceType === 'upload' && (
-                    <>
-                      <span aria-hidden="true">·</span>
-                      <span className="text-emerald-700 font-semibold flex items-center gap-1">
-                        <Upload className="w-3 h-3" /> Desktop Uploaded Video
-                      </span>
-                    </>
-                  )}
                 </div>
-                <h2 className="text-lg font-bold text-[#0B2147]">{activeLesson.title}</h2>
+                <h2 className="text-base sm:text-lg font-bold text-white truncate">
+                  {activeLesson.title}
+                </h2>
               </div>
 
-              {/* Completion & Navigation Controls */}
-              <div className="flex items-center gap-2.5 shrink-0">
+              {/* Navigation & Completion Buttons */}
+              <div className="flex items-center gap-2 shrink-0">
                 <button
                   onClick={handleToggleComplete}
-                  className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-2xs ${
+                  className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
                     isCurrentLessonCompleted
-                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-300 hover:bg-emerald-100'
-                      : 'bg-white text-slate-700 border border-slate-300 hover:border-blue-600 hover:text-blue-700'
+                      ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/30'
+                      : 'bg-white/10 hover:bg-white/20 text-slate-200'
                   }`}
                 >
-                  <CheckCircle2 className={`w-4 h-4 ${isCurrentLessonCompleted ? 'text-emerald-600' : 'text-slate-400'}`} />
+                  <CheckCircle2 className={`w-4 h-4 ${isCurrentLessonCompleted ? 'text-emerald-400' : 'text-slate-400'}`} />
                   <span>{isCurrentLessonCompleted ? 'Completed' : 'Mark as Complete'}</span>
                 </button>
 
-                <div className="flex items-center gap-1 border-l border-slate-200 pl-2">
+                <div className="flex items-center gap-1 border-l border-slate-800 pl-2">
                   <button
                     disabled={!prevLesson}
                     onClick={() => prevLesson && setActiveLesson(prevLesson)}
-                    className="p-2 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    className="p-2 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 disabled:opacity-30 disabled:cursor-not-allowed"
                     title="Previous Lesson"
                   >
                     <ChevronLeft className="w-4 h-4" />
@@ -303,7 +388,7 @@ export const CourseLearningPage: React.FC<CourseLearningPageProps> = ({ courseId
                   <button
                     disabled={!nextLesson}
                     onClick={() => nextLesson && setActiveLesson(nextLesson)}
-                    className="p-2 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    className="p-2 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 disabled:opacity-30 disabled:cursor-not-allowed"
                     title="Next Lesson"
                   >
                     <ChevronRight className="w-4 h-4" />
@@ -313,199 +398,146 @@ export const CourseLearningPage: React.FC<CourseLearningPageProps> = ({ courseId
             </div>
           )}
 
-          {/* Lesson Tabs: Overview, Notes & Resources, Study Notes, Live Meeting */}
-          <div className="p-6 bg-white flex-1">
-            <div className="flex items-center gap-2 border-b border-slate-200 pb-2 mb-6">
+          {/* Tab Navigation: Overview, Notes & Resources, Live Meeting */}
+          <div className="p-4 sm:p-6 flex-1 bg-slate-900">
+            <div className="flex items-center gap-2 border-b border-slate-800 pb-2 mb-4">
               <button
                 onClick={() => setActiveTab('overview')}
-                className={`px-4 py-2 text-xs font-bold rounded-lg transition-colors ${
+                className={`px-3.5 py-1.5 text-xs font-bold rounded-lg transition-colors ${
                   activeTab === 'overview'
-                    ? 'bg-blue-50 text-blue-800'
-                    : 'text-slate-600 hover:text-slate-900'
+                    ? 'bg-blue-600 text-white'
+                    : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
                 Lesson Overview
               </button>
               <button
                 onClick={() => setActiveTab('resources')}
-                className={`px-4 py-2 text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 ${
+                className={`px-3.5 py-1.5 text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 ${
                   activeTab === 'resources'
-                    ? 'bg-blue-50 text-blue-800'
-                    : 'text-slate-600 hover:text-slate-900'
+                    ? 'bg-blue-600 text-white'
+                    : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
                 <FileText className="w-3.5 h-3.5" />
-                <span>PDF Notes & Resources</span>
+                <span>Notes & Resources</span>
                 {activeLesson?.resources && activeLesson.resources.length > 0 && (
-                  <span className="px-1.5 py-0.2 bg-blue-200 text-blue-900 rounded-full text-[10px] font-mono">
+                  <span className="px-1.5 py-0.2 bg-blue-900 text-blue-200 rounded-full text-[10px] font-mono">
                     {activeLesson.resources.length}
                   </span>
                 )}
               </button>
-              <button
-                onClick={() => setActiveTab('notes')}
-                className={`px-4 py-2 text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 ${
-                  activeTab === 'notes'
-                    ? 'bg-blue-50 text-blue-800'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <span>My Notes</span>
-              </button>
               {course.meetingSchedule && course.meetingSchedule.isPublished && (
                 <button
                   onClick={() => setActiveTab('meeting')}
-                  className={`px-4 py-2 text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 ${
+                  className={`px-3.5 py-1.5 text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 ${
                     activeTab === 'meeting'
-                      ? 'bg-blue-50 text-blue-800'
-                      : 'text-slate-600 hover:text-slate-900'
+                      ? 'bg-blue-600 text-white'
+                      : 'text-slate-400 hover:text-slate-200'
                   }`}
                 >
-                  <Video className="w-3.5 h-3.5 text-blue-600" />
+                  <Video className="w-3.5 h-3.5" />
                   <span>Live Meeting</span>
                 </button>
               )}
             </div>
 
-            {/* Tab: Overview */}
+            {/* Content: Overview */}
             {activeTab === 'overview' && activeLesson && (
-              <div className="space-y-4 max-w-3xl">
-                <div>
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 mb-2">Lesson Description</h3>
-                  <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-line">
-                    {activeLesson.description}
-                  </p>
-                </div>
-
-                <div className="pt-4 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-                  <span>Course: <strong className="text-slate-800">{course.title}</strong></span>
-                  <span>Duration: <strong className="text-slate-800">{activeLesson.durationMinutes} minutes</strong></span>
+              <div className="max-w-3xl space-y-4">
+                <p className="text-xs sm:text-sm text-slate-300 leading-relaxed whitespace-pre-line">
+                  {activeLesson.description}
+                </p>
+                <div className="pt-4 border-t border-slate-800 text-xs text-slate-500">
+                  Course: <span className="text-slate-300 font-semibold">{course.title}</span>
                 </div>
               </div>
             )}
 
-            {/* Tab: PDF Notes & Resources */}
+            {/* Content: Notes & Resources */}
             {activeTab === 'resources' && (
-              <div className="space-y-4 max-w-2xl">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-bold text-slate-900">Downloadable Notes & PDF Materials</h3>
-                  <span className="text-xs text-slate-500">Authorized for enrolled students</span>
+              <div className="max-w-2xl space-y-3">
+                <div className="text-xs font-bold text-slate-300">
+                  PDF Notes & Learning Documents
                 </div>
 
                 {activeLesson?.resources && activeLesson.resources.length > 0 ? (
-                  <div className="space-y-3">
+                  <div className="space-y-2">
                     {activeLesson.resources.map((res) => (
                       <div
                         key={res.id}
-                        className="p-4 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-slate-50 flex items-center justify-between gap-4 transition-colors"
+                        className="p-3.5 rounded-xl border border-slate-800 bg-slate-950 flex items-center justify-between gap-4 text-xs"
                       >
-                        <div className="flex items-center gap-3">
-                          <div className="w-9 h-9 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center shrink-0">
-                            <FileText className="w-5 h-5" />
-                          </div>
-                          <div>
-                            <div className="text-xs font-bold text-slate-900">{res.title}</div>
+                        <div className="flex items-center gap-3 truncate">
+                          <FileText className="w-5 h-5 text-blue-400 shrink-0" />
+                          <div className="truncate">
+                            <div className="font-semibold text-white truncate">{res.title}</div>
                             {res.description && (
-                              <div className="text-[11px] text-slate-500 line-clamp-1">{res.description}</div>
+                              <div className="text-[11px] text-slate-400 truncate">{res.description}</div>
                             )}
                           </div>
                         </div>
 
                         <div className="flex items-center gap-2 shrink-0">
                           <button
-                            onClick={() => setActivePdfPreview(res)}
-                            className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg text-xs font-bold transition-all flex items-center gap-1"
+                            onClick={() => setActivePdfModal(res)}
+                            className="px-2.5 py-1 bg-blue-600/20 text-blue-300 hover:bg-blue-600/30 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors"
                           >
                             <Eye className="w-3.5 h-3.5" />
                             <span>View</span>
                           </button>
                           <a
-                            href={res.url !== '#' ? res.url : undefined}
+                            href={res.url}
                             download={res.fileName || `${res.title}.pdf`}
-                            onClick={() => {
-                              if (res.url === '#') {
-                                success(`Downloaded: ${res.title}`);
-                              }
-                            }}
-                            className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-lg text-xs font-bold transition-all flex items-center gap-1"
+                            className="p-1.5 bg-white/10 hover:bg-white/20 text-slate-200 rounded-lg transition-colors"
+                            title="Download PDF"
                           >
                             <Download className="w-3.5 h-3.5" />
-                            <span>Download</span>
                           </a>
                         </div>
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <div className="p-8 text-center text-slate-400 border border-dashed border-slate-200 rounded-xl">
-                    <p className="text-xs">No PDF notes attached to this lesson.</p>
+                  <div className="p-8 text-center text-slate-500 border border-dashed border-slate-800 rounded-xl">
+                    <p className="text-xs">No notes uploaded for this lesson yet.</p>
                   </div>
                 )}
               </div>
             )}
 
-            {/* Tab: Study Notes */}
-            {activeTab === 'notes' && (
-              <div className="space-y-4 max-w-2xl">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h3 className="text-sm font-bold text-slate-900">Personal Lesson Notes</h3>
-                    <p className="text-xs text-slate-500">Private study notebook for this session</p>
-                  </div>
-                  <button
-                    onClick={handleSaveNote}
-                    disabled={noteSaving}
-                    className="px-4 py-2 bg-[#0B2147] text-white rounded-lg text-xs font-bold hover:bg-blue-900 transition-colors flex items-center gap-1.5 shadow-2xs disabled:opacity-50"
-                  >
-                    <Save className="w-3.5 h-3.5" />
-                    <span>{noteSaving ? 'Saving...' : 'Save Notes'}</span>
-                  </button>
-                </div>
-
-                <textarea
-                  value={lessonNote}
-                  onChange={(e) => setLessonNote(e.target.value)}
-                  placeholder="Type your notes, code snippets, or bug checklists here..."
-                  rows={8}
-                  className="w-full p-4 text-xs font-mono border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#0B2147] bg-slate-50/50 leading-relaxed"
-                />
-              </div>
-            )}
-
-            {/* Tab: Meeting */}
+            {/* Content: Meeting */}
             {activeTab === 'meeting' && course.meetingSchedule && (
               <div className="max-w-xl space-y-4">
-                <h3 className="text-sm font-bold text-slate-900">Upcoming Live Masterclass</h3>
-                <div className="p-6 rounded-2xl border border-blue-200 bg-blue-50/50 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-blue-800 uppercase tracking-wider">
-                      {course.meetingSchedule.platform} Live Classroom
+                <div className="p-5 rounded-2xl border border-blue-900 bg-blue-950/40 space-y-3">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-blue-300 uppercase tracking-wider">
+                      {course.meetingSchedule.platform} Live Session
                     </span>
-                    <span className="px-2.5 py-0.5 rounded text-[10px] font-bold bg-blue-200 text-blue-900">
+                    <span className="px-2 py-0.5 rounded text-[10px] bg-blue-900 text-blue-200">
                       {course.meetingSchedule.nextSessionDate || 'Scheduled Class'}
                     </span>
                   </div>
 
                   <div>
-                    <h4 className="text-base font-bold text-[#0B2147]">{course.meetingSchedule.title}</h4>
-                    <p className="text-xs text-slate-600 mt-1">Schedule: {course.meetingSchedule.timeDescription}</p>
+                    <h3 className="text-sm font-bold text-white">{course.meetingSchedule.title}</h3>
+                    <p className="text-xs text-slate-400 mt-1">{course.meetingSchedule.timeDescription}</p>
                   </div>
 
                   {course.meetingSchedule.instructions && (
-                    <div className="p-3 bg-white rounded-xl border border-blue-100 text-xs text-slate-700">
-                      <strong>Instructions: </strong>
-                      {course.meetingSchedule.instructions}
-                    </div>
+                    <p className="text-xs text-slate-400 italic bg-black/30 p-2.5 rounded-lg border border-blue-900/50">
+                      Instructions: {course.meetingSchedule.instructions}
+                    </p>
                   )}
 
                   <a
                     href={course.meetingSchedule.url}
                     target="_blank"
                     rel="noreferrer"
-                    className="w-full py-3 bg-[#0B2147] hover:bg-blue-900 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-sm"
+                    className="w-full py-2.5 bg-[#0B2147] hover:bg-blue-900 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 border border-blue-800 shadow-sm"
                   >
-                    <Video className="w-4 h-4" />
-                    <span>Join Live Meeting Now</span>
+                    <Video className="w-4 h-4 text-blue-400" />
+                    <span>Launch Live Classroom</span>
                     <ExternalLink className="w-3.5 h-3.5" />
                   </a>
                 </div>
@@ -514,30 +546,32 @@ export const CourseLearningPage: React.FC<CourseLearningPageProps> = ({ courseId
           </div>
         </div>
 
-        {/* Right Sidebar: Syllabus */}
+        {/* Right Viewport: Expandable/Collapsible Syllabus Sidebar */}
         {sidebarOpen && (
-          <aside className="w-full lg:w-96 bg-white border-l border-slate-200 flex flex-col shrink-0 max-h-[calc(100vh-50px)] lg:h-auto overflow-hidden">
-            <div className="p-4 border-b border-slate-200 bg-slate-50/50 flex items-center justify-between">
+          <aside className="w-full lg:w-88 bg-slate-950 border-l border-slate-800 flex flex-col shrink-0 max-h-[40vh] lg:max-h-full overflow-hidden z-10">
+            <div className="p-3.5 border-b border-slate-800 flex items-center justify-between">
               <div>
-                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-900">Course Syllabus</h3>
-                <p className="text-[11px] text-slate-500">
-                  {completedCount} / {totalLessonsCount} Lessons Completed
-                </p>
+                <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">
+                  Course Syllabus
+                </span>
+                <span className="text-[11px] text-slate-500">
+                  {completedCount} / {totalLessonsCount} Completed
+                </span>
               </div>
-              <span className="font-mono text-xs font-extrabold text-blue-700">
+              <span className="font-mono text-xs font-bold text-blue-400">
                 {progressPercent}%
               </span>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-3 space-y-4">
-              {course.modules.map((module) => (
-                <div key={module.id} className="space-y-1.5">
-                  <div className="px-2 py-1 text-xs font-bold text-slate-800">
-                    {module.title}
+            <div className="flex-1 overflow-y-auto p-2 space-y-3">
+              {course.modules.map((mod) => (
+                <div key={mod.id} className="space-y-1">
+                  <div className="px-2 py-1 text-xs font-bold text-slate-400 truncate">
+                    {mod.title}
                   </div>
 
-                  <div className="space-y-1">
-                    {module.lessons.map((lesson) => {
+                  <div className="space-y-0.5">
+                    {mod.lessons.map((lesson) => {
                       const isActive = activeLesson?.id === lesson.id;
                       const isDone = completedLessonIds.includes(lesson.id);
 
@@ -545,32 +579,27 @@ export const CourseLearningPage: React.FC<CourseLearningPageProps> = ({ courseId
                         <button
                           key={lesson.id}
                           onClick={() => setActiveLesson(lesson)}
-                          className={`w-full text-left p-2.5 rounded-xl text-xs transition-all flex items-start gap-2.5 ${
+                          className={`w-full text-left p-2 rounded-xl text-xs transition-all flex items-start gap-2 ${
                             isActive
-                              ? 'bg-blue-50 text-blue-900 font-bold border border-blue-200 shadow-2xs'
-                              : 'text-slate-700 hover:bg-slate-50 hover:text-slate-900 border border-transparent'
+                              ? 'bg-blue-600 text-white font-bold'
+                              : 'text-slate-300 hover:bg-white/5'
                           }`}
                         >
                           <div className="mt-0.5 shrink-0">
                             {isDone ? (
-                              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                              <CheckCircle2 className={`w-3.5 h-3.5 ${isActive ? 'text-white' : 'text-emerald-400'}`} />
                             ) : isActive ? (
-                              <Play className="w-4 h-4 text-blue-600 fill-blue-600" />
+                              <Play className="w-3.5 h-3.5 fill-current" />
                             ) : (
-                              <div className="w-4 h-4 rounded-full border border-slate-300" />
+                              <div className="w-3.5 h-3.5 rounded-full border border-slate-600" />
                             )}
                           </div>
 
                           <div className="flex-1 min-w-0">
                             <div className="truncate leading-tight">{lesson.title}</div>
-                            <div className="flex items-center gap-2 text-[10px] text-slate-400 mt-1">
-                              <span>{lesson.durationMinutes} min</span>
-                              {lesson.resources && lesson.resources.length > 0 && (
-                                <>
-                                  <span aria-hidden="true">·</span>
-                                  <span>{lesson.resources.length} PDF</span>
-                                </>
-                              )}
+                            <div className={`text-[10px] mt-0.5 ${isActive ? 'text-blue-200' : 'text-slate-500'}`}>
+                              {lesson.durationMinutes}m
+                              {lesson.resources && lesson.resources.length > 0 && ` · ${lesson.resources.length} PDF`}
                             </div>
                           </div>
                         </button>
@@ -584,45 +613,55 @@ export const CourseLearningPage: React.FC<CourseLearningPageProps> = ({ courseId
         )}
       </div>
 
-      {/* PDF Document Preview Modal */}
-      {activePdfPreview && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
-          <div className="bg-white rounded-3xl max-w-xl w-full p-6 shadow-2xl border border-slate-200">
-            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
-              <div className="flex items-center gap-3">
-                <FileText className="w-6 h-6 text-blue-600" />
-                <h3 className="text-sm font-bold text-slate-900">{activePdfPreview.title}</h3>
+      {/* PDF View Modal */}
+      {activePdfModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-xl w-full p-6 text-white space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                <FileText className="w-5 h-5 text-blue-400" />
+                <h3 className="text-sm font-bold truncate max-w-sm">{activePdfModal.title}</h3>
               </div>
               <button
-                onClick={() => setActivePdfPreview(null)}
-                className="p-1 text-slate-400 hover:text-slate-600"
+                onClick={() => setActivePdfModal(null)}
+                className="p-1 text-slate-400 hover:text-white"
               >
-                ✕
+                <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="py-6 text-xs text-slate-600 space-y-3">
-              <p>{activePdfPreview.description || 'Verified course study notes for this session.'}</p>
-              <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl text-center">
-                <FileText className="w-10 h-10 text-slate-400 mx-auto mb-2" />
-                <span className="font-bold text-slate-800 block">{activePdfPreview.fileName || 'course_notes.pdf'}</span>
-                <span className="text-slate-400 text-[11px]">Ready for download</span>
+
+            <div className="text-xs text-slate-400 space-y-2">
+              <p>{activePdfModal.description || 'Verified course study notes for this session.'}</p>
+              <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl text-center space-y-1">
+                <FileText className="w-8 h-8 text-blue-400 mx-auto" />
+                <span className="block font-bold text-slate-200">{activePdfModal.fileName || 'course_notes.pdf'}</span>
+                <span className="text-[11px] text-slate-500">Official Pathfinder Document</span>
               </div>
             </div>
-            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
               <button
-                onClick={() => setActivePdfPreview(null)}
-                className="px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100 rounded-lg"
+                onClick={() => setActivePdfModal(null)}
+                className="px-3.5 py-1.5 bg-white/10 hover:bg-white/20 text-slate-300 rounded-lg text-xs"
               >
                 Close
               </button>
               <a
-                href={activePdfPreview.url !== '#' ? activePdfPreview.url : undefined}
-                download={activePdfPreview.fileName || `${activePdfPreview.title}.pdf`}
-                onClick={() => success(`Download started: ${activePdfPreview.title}`)}
-                className="px-4 py-1.5 text-xs font-bold text-white bg-[#0B2147] rounded-lg hover:bg-blue-900 flex items-center gap-1.5"
+                href={activePdfModal.url}
+                target="_blank"
+                rel="noreferrer"
+                className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>Open in Browser</span>
+              </a>
+              <a
+                href={activePdfModal.url}
+                download={activePdfModal.fileName || `${activePdfModal.title}.pdf`}
+                className="px-4 py-1.5 bg-[#0B2147] hover:bg-blue-900 text-white border border-blue-800 rounded-lg text-xs font-bold flex items-center gap-1.5"
               >
                 <Download className="w-3.5 h-3.5" />
-                <span>Download PDF</span>
+                <span>Download</span>
               </a>
             </div>
           </div>
