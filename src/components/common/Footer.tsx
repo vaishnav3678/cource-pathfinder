@@ -25,7 +25,7 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
 
             {/* Small unobtrusive Admin Login link */}
             <button
-              onClick={() => onNavigate('admin-login')}
+              onClick={() => onNavigate('admin')}
               className="text-slate-400 hover:text-slate-700 transition-colors inline-flex items-center gap-1 text-[11px]"
               title="Administrator Sign In"
             >

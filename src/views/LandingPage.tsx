@@ -1,6 +1,8 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { PathfinderLogo } from '../components/common/PathfinderLogo';
 import { storage } from '../services/storage';
+import { fetchCourses, subscribeDataChanges } from '../services/api';
+import { Course } from '../types';
 import { ArrowRight, BookOpen, Clock, Lock } from 'lucide-react';
 
 interface LandingPageProps {
@@ -8,7 +10,29 @@ interface LandingPageProps {
 }
 
 export const LandingPage: React.FC<LandingPageProps> = ({ onNavigate }) => {
-  const courses = storage.getCourses();
+  const [courses, setCourses] = useState<Course[]>(() => storage.getCourses());
+
+  useEffect(() => {
+    let isMounted = true;
+    const load = async () => {
+      try {
+        const remote = await fetchCourses();
+        if (isMounted && remote && remote.length > 0) {
+          setCourses(remote);
+        }
+      } catch (e) {
+        // silent fallback to storage
+      }
+    };
+    load();
+    const unsubscribe = subscribeDataChanges(() => {
+      load();
+    });
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+  }, []);
 
   return (
     <div className="bg-white min-h-[calc(100vh-140px)] flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8">
